@@ -15,13 +15,13 @@ O objetivo deste trabalho é realizar uma Análise Exploratória de Dados (AED) 
 ## Estrutura do Repositório
 
 ```text
-├── graficos/                    # Visualizações criadas a partir da AED e avaliação dos modelos
-├── models.py                    # Arquivo Python com modelagem dos dados
-├── relatorio.qmd                # Código do relatório em Quarto (R + Python)
-├── relatorio.pdf                # Relatório final em PDF
-├── star_classification.csv      # Base de dados original (SDSS-IV DR17 - 100.000 registros)
-├── star_classification_limpo.csv# Base de dados tratada (sem valores inválidos e outliers extremos)
-└── README.md                    # Documentação do projeto
+├── graficos/                       # Visualizações criadas a partir da AED e avaliação dos modelos
+├── models.py                       # Arquivo Python com modelagem dos dados
+├── relatorio.qmd                   # Código do relatório em Quarto (R + Python)
+├── relatorio.pdf                   # Relatório final em PDF
+├── star_classification.csv         # Base de dados original (SDSS-IV DR17 - 100.000 registros)
+├── star_classification_limpo.csv   # Base de dados tratada (sem valores inválidos e outliers extremos)
+└── README.md                       # Documentação do projeto
 ```
 
 ---
@@ -51,5 +51,4 @@ Os dados são da **Data Release 17 (DR17)** do *Sloan Digital Sky Survey* (dispo
 * **Python 3.13.5** (com as bibliotecas `pandas`, `scikit-learn`, `pycaret`, `imbalanced-learn`, `matplotlib`, `seaborn`)
 * **Quarto** (para o relatório)
 
-   quarto render relatorio.qmd
-   ```
+---
