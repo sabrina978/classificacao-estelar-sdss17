@@ -7,7 +7,7 @@ O objetivo deste trabalho é realizar uma Análise Exploratória de Dados (AED) 
 ---
 
 ## Autoria
-* **Autor(a):** [Thays Sabrina Brito de Souza]
+* **Autora:** [Thays Sabrina Brito de Souza]
 * **Data:** Novembro de 2026
 
 ---
