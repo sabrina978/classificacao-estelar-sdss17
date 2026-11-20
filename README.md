@@ -6,9 +6,8 @@ O objetivo deste trabalho é realizar uma Análise Exploratória de Dados (AED) 
 
 ---
 
-## 👥 Autoria
+## Autoria
 * **Autor(a):** [Thays Sabrina Brito de Souza]
-* **Instituição:** Universidade Federal de Pernambuco (UFPE) — Departamento de Estatística
 * **Data:** Novembro de 2026
 
 ---
