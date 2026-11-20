@@ -1,0 +1,653 @@
+---
+title: ""
+keep-tex: true
+format:
+  pdf:
+    documentclass: extarticle
+    fontsize: 9.1pt
+    classoption: [onecolumn]
+    lof: false
+    lot: false
+    geometry:
+      - left=35mm
+      - right=35mm
+      - top=15mm
+      - bottom=20mm
+      - noheadfoot
+    include-in-header:
+      - text: |
+          \usepackage{inputenc}
+editor: visual
+execute:
+  warning: false
+  message: false
+---
+
+# Universidade Federal de Pernambuco
+
+\vspace{-.4cm}
+
+# Centro de Ciências Exatas e da Natureza
+
+\vspace{-.4cm}
+
+# Departamento de Estatística
+
+\vspace{.3cm}
+
+```{r, eval=TRUE, echo=FALSE}
+data <- format(Sys.Date(), "%d de %B de %Y")
+```
+
+## CLASSIFICAÇÃO ESTELAR COM MODELAGEM PREDITIVA
+
+\vspace{.3cm}
+
+**Data:** `r data`
+
+\vspace{.3cm}
+
+# Relatório
+
+## Introdução
+
+Na área astronômica existem diversos telescópios gerando um grande volume de dados estatísticos. Sendo o esforço humano incapaz de lidar com uma quantidade tão vasta de informações, a IA e o aprendizado de máquina tornam-se uma necessidade científica. *(BEN HASSEN; DEBBABI, 2024)*.
+
+Neste relatório, será utilizada a Data Release 17 *(DR17)*, que marca o último lançamento da quarta fase do Sloan Digital Sky Survey (SDSS-IV) *(SDSS, 2021; ABDURRO'UF et al., 2022)*. A base de dados, disponibilizada por *Soriano (2022)*, é composta por 100.000 observações, cada uma sendo categorizada como três tipos de objetos: estrelas, quasares e galáxias. O objetivo do trabalho é realizar uma análise desses dados e aplicar métodos de aprendizado de máquina para automatizar a classificação de corpos estelares utilizando dados de fotometria e redshift. Neste projeto, são implementados alguns modelos preditivos supervisionados e compara-se as vantagens e desvantagens dessas abordagens.
+
+```{r setup}
+#| eval: false
+#| include: false
+
+library(tidyverse)   # dplyr, ggplot2, readr, tidyr
+library(e1071)       # calcular assimetria
+library(patchwork)   # juntar gráficos lado a lado ou em grelha
+library(ggcorrplot)  # matriz de correlação
+library(GGally)      # pairplot
+
+# Ler dados
+df <- read_csv("star_classification.csv")
+head(df)
+```
+
+## Fundamentos Teóricos e Metodológicos
+
+Na Análise Exploratória de Dados, além da limpeza dos dados, foram aplicadas técnicas estatísticas e visuais para compreender a distribuição, comportamento e correlação das variáveis antes da modelagem. No contexto, o foco é entender como as diferentes bandas de luz e redshift se comportam para cada tipo de objeto estelar.
+
+Para a modelagem dos dados, foram escolhidos os seguintes algoritmos: Floresta Aleatória, por sua capacidade de medir a importância e capturar relações complexas entre features, além de reduzir a variância de uma árvore de decisão isolada, demonstrando alta eficácia na base SDSS (Breiman, 2001; Al-Jubouri et al., 2022); e Support Vector Machine (SVM) pelas fronteiras não lineares com alta generalização e por depender apenas dos vetores de suporte para predições. Como conjunto, trazem abordagens complementares: a Floresta segue decisões e regras hierárquicas enquanto o SVM traz uma visão geométrica global, traçando hiperplanos de margem máxima que delimitam e separam os objetos estelares (Cortes & Vapnik, 1995; Freed & Lee, 2013).
+
+### Apresentação das Colunas Importantes
+
+**Posição**
+
+- alpha = Ângulo de ascensão reta (mede a posição para a esquerda ou direita);
+
+- delta = Ângulo de declinação (mede a posição para cima ou para baixo);
+
+**Fotométricas**
+
+- u = Filtro ultravioleta; g = Filtro verde; r = Filtro vermelho ;
+
+- i = Filtro de infravermelho próximo; z = Filtro infravermelho;
+
+**Redshift**: Valor do desvio para o vermelho com base no aumento do comprimento de onda;
+
+**Class**: Classe do objeto (galáxia, estrela ou objeto quasar).
+
+```{r limpeza-inicial}
+#| eval: false
+#| include: false
+# Retirar variáveis ID (não relacionadas com os dados)
+df <- df %>%
+  select(-c(obj_ID, run_ID, rerun_ID, cam_col, field_ID, 
+            spec_obj_ID, plate, MJD, fiber_ID))
+
+# Verificar valores nulos e duplicados
+nulos <- colSums(is.na(df))
+duplicados <- sum(duplicated(df))
+
+cat("Total de linhas duplicadas:", duplicados, "\n")
+print(nulos)
+```
+
+```{r resumo-inicial}
+#| eval: false
+#| include: false
+summary(df) # Resumo Estatístico Inicial
+```
+
+```{r tratamento-outliers}
+#| eval: false
+#| include: false
+# Separar colunas numéricas
+colunas <- df %>% select(where(is.numeric)) %>% names()
+col_filtro <- df %>% select(where(is.numeric), -any_of(c("alpha", "delta"))) %>%
+  names() # excluir alpha e delta, pois indica apenas localização do objeto
+
+# Retirar linhas que contenham valores -9999 em qualquer coluna numérica
+df <- df %>%
+  filter(if_all(all_of(colunas), ~ . > -9999))
+
+# Calcular Q1, Q3, IQR e identificar outliers por classe
+outliers_df <- df %>%
+  group_by(class) %>%
+  mutate(across(all_of(col_filtro), ~ {
+    q1 <- quantile(., 0.25, na.rm = TRUE)
+    q3 <- quantile(., 0.75, na.rm = TRUE)
+    iqr <- q3 - q1
+    (. < (q1 - 3 * iqr)) | (. > (q3 + 3 * iqr)) # 3 para remover apenas extremos
+  }, .names = "out_{.col}")) %>%
+  ungroup()
+
+# Contar outliers em cada coluna, agrupados por classe
+contagem_colunas <- outliers_df %>%
+  group_by(class) %>%
+  summarise(
+    linhas_outliers = sum(if_any(starts_with("out_"), ~ .)),
+    across(starts_with("out_"), sum)
+  )
+
+contagem_colunas
+```
+
+```{r filtrar-exportar}
+#| eval: false
+#| include: false
+# Filtrar outliers
+df <- outliers_df %>%
+  filter(!if_any(starts_with("out_"), ~ .)) %>%
+  select(-starts_with("out_"))
+
+cat("Dimensão final:", nrow(df), "linhas e", ncol(df), "colunas.\n")
+
+# Resumo estatístico
+df %>%
+  select(all_of(colunas)) %>%
+  summary()
+
+# Exportar dados limpos para futura modelagem
+write_csv(df, "star_classification_limpo.csv")
+```
+
+## Aplicação
+
+### Distribuição das Classes
+
+Observando o gráfico de barras abaixo, é perceptível um desbalanceamento entre as categorias de objetos astronômicos presentes na base de dados. Logo, nas modelagens futuras, será necessário aplicar uma técnica de balanceamento.
+
+```{r dist-classes}
+#| eval: false
+#| fig-height: 2
+#| fig-width: 3
+#| include: false
+
+ggplot(df, aes(x = fct_infreq(class))) +
+  geom_bar(fill = "#4E79A7") +
+  labs(title = "Frequência de Classe", x = "Classes", y = "Quantidade") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+![](graficos/dist_classes.jpg){fig-align="center" width="251"}
+
+### Distribuição e Assimetria por Característica
+
+Abaixo são apresentados os histogramas com curva de densidade (KDE) e os respetivos boxplots para cada variável numérica.
+
+A partir desses resultados, observa-se que g, r e i possuem um leve deslocamento para a direita, enquanto o redshift tem uma forte assimetria positiva (concentração de dados no extremo esquerdo, no caso o valor 0) e cauda direita longa. Já as demais variáveis são aproximadamente simétricas.
+
+```{r hist-boxplots}
+#| eval: false
+#| fig-height: 8
+#| fig-width: 12
+#| include: false
+
+graficos <- lapply(colunas, function(col) {
+  assim <- round(skewness(df[[col]], na.rm = TRUE), 2)
+  largura_bin <- diff(range(df[[col]], na.rm = TRUE)) / 30
+  
+  p1 <- ggplot(df, aes(x = .data[[col]])) +
+    geom_histogram(bins = 30, fill = "#4E79A7", color = "white") +
+    geom_density(aes(y = after_stat(count) * largura_bin), color = "#1f4e78", linewidth = 0.7) +
+    labs(title = paste0("Distribuição de ", col, " (Assimetria: ", assim, ")"), x = col, y = "Frequência") +
+    theme_minimal(base_size = 9) +
+    theme(plot.title = element_text(face = "bold"))
+  
+  p2 <- ggplot(df, aes(x = .data[[col]])) +
+    geom_boxplot(fill = "#4E79A7", width = 0.6, outlier.shape = NA) +
+    coord_cartesian(xlim = range(df[[col]], na.rm = TRUE)) +
+    labs(title = paste("         Boxplot de", col), x = col) +
+    theme_minimal(base_size = 9) +
+    theme(plot.title = element_text(face = "bold"), axis.text.y = element_blank())
+  
+  p1 | p2 # Coloca lado a lado (em vez de p1 / p2)
+})
+
+wrap_plots(graficos, ncol = 2)
+```
+
+![](graficos/hist-boxplots-1_page-0001.jpg){width="525"}
+
+### Comparação de Distribuições por Classe
+
+A fim de analisar mais de perto a distribuição das features (em especial o redshift), faz-se necessário agrupar as variáveis em formato longo para comparar como cada atributo físico se comporta entre galáxias, estrelas e quasares.
+
+Analisando as distribuições de valores das cores é nítido visualmente que, nos aspectos fotométricos, a distribuição de cada classe individual demonstra uma tendência a seguir o mesmo padrão em cada filtro de luz. Apesar das intercessões nas cores individuais, uma análise conjunta facilitaria a distinção entre os objetos.Esse padrão específico de cada classe demonstra uma possível tendência a resultados preditivos positivos (além de uma correlação entre essas features).
+
+Outro dado importante é a óbvia concentração de valores de redshift muito próximos de 0 na classe star. Através desses gráficos, conseguimos compreender o motivo da assimetria dessa variável. Além disso, com o boxplot é perceptível que os quasares possuem valores mais altos que as galáxias. Sendo assim, o redshift apresenta grande potencial de diferenciação entre esses corpos celestes.
+
+```{r boxplots-classe}
+#| eval: false
+#| include: false
+#| fig-width: 14
+#| fig-height: 5.5
+
+df_long <- df %>%
+  pivot_longer(cols = all_of(colunas), names_to = "feature", values_to = "valor")
+
+ggplot(df_long, aes(x = class, y = valor, fill = class)) +
+  geom_boxplot(outlier.size = 0.5, outlier.alpha = 0.3, show.legend = FALSE) +
+  facet_wrap(~ feature, scales = "free_y", nrow = 2, ncol = 4) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Boxplots das Features por Classe", x = "", y = "Valor") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+![](graficos/boxplots-classe-1_page-0001.jpg){width="515"}
+
+```{r densidade-classe}
+#| eval: false
+#| include: false
+#| fig-width: 12
+#| fig-height: 4
+
+ggplot(df_long, aes(x = valor, fill = class, color = class)) +
+  geom_density(alpha = 0.4) +
+  facet_wrap(~ feature, scales = "free", nrow = 2, ncol = 4) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_color_brewer(palette = "Set2") +
+  labs(title = "Distribuição de Densidade das Features por Classe", x = "", y = "Densidade") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold")) +
+  theme(legend.position = "bottom")
+```
+
+![](graficos/densidade-classe-1_page-0001.jpeg){width="522"}
+
+### Distribuição Espacial e Correlação Linear
+
+Após checar as distribuições individuais e por classe, é importante observar a posição celeste (Ascensão Reta vs. Declinação) dos corpos, com o objetivo de considerar a possibilidade de sua ocupação no espaço estar relacionada com sua classificação. O gráfico foi construído a partir de uma amostra de 8.000 observações, pois, além do longo processamento, é provável que a densidade de dados original atrapalhe a visualização.
+
+Como resultado, a figura mostra que esses corpos celestes estão bem agrupados — chegando até a se sobrepor — e, portanto, sua posição possui pouca ou nenhuma relação com sua classificação.
+
+Ao lado encontra-se a matriz de correlação de Pearson entre todas as variáveis numéricas. A partir dela, pode-se visualizar uma forte relação positiva (seguem a mesma direção) entre as colunas fotométricas (principalmente entre g, r e i). No entanto, alpha e delta não possuem correlação com outras variáveis, apenas uma bem fraca entre si.
+
+```{r espacial-correlacao}
+#| eval: false
+#| include: false
+#| fig-width: 15
+#| fig-height: 5
+
+set.seed(42)
+amostra <- df %>% sample_n(min(8000, nrow(df)))
+
+p_espacial <- ggplot(amostra, aes(x = alpha, y = delta, color = class)) +
+  geom_point(alpha = 0.4, size = 0.8) +
+  labs(title = "Distribuição Espacial (Amostra 8000)",
+       x = "Ascensão Reta (alpha)", y = "Declinação (delta)", color = "Classe") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+corr <- cor(df %>% select(all_of(colunas)))
+p_corr <- ggcorrplot(corr, lab = TRUE, lab_size = 3, colors = c("#3B4CC0", "white", "#B40426")) +
+  labs(title = "Matriz de Correlação") +
+  theme(plot.title = element_text(face = "bold"))
+
+p_espacial + p_corr
+```
+
+![](graficos/espacial-correlacao-1_page-0001.jpg){width="540"}
+
+### Matriz de Dispersão Multivariada (Pairplot)
+
+Levando em consideração a matriz de correlação, a visualização das relações par a par entre todas as características fotométricas numa amostra de 3.000 registros traz a visualização das relações intensas e positivas entre essas variáveis e, separando pela classe, também possibilita a identificação de fronteiras de separação entre os corpos estelares.
+
+De fato, os pontos formam faixas diagonais bem definidas, confirmando que um objeto brilhante numa banda de luz tende a ser brilhante nas outras.
+
+```{r pairplot}
+#| eval: false
+#| include: false
+#| fig-width: 12
+#| fig-height: 5
+
+set.seed(12)
+fotometricas <- df %>% select(where(is.numeric), 
+                             -any_of(c("alpha", "delta","redshift"))) %>%
+  names()
+amostra_pair <- df %>% sample_n(min(3000, nrow(df)))
+
+p_pair <- ggpairs(
+  amostra_pair,
+  columns = fotometricas,
+  aes(color = class),
+  upper = list(continuous = "blank"),
+  lower = list(continuous = wrap("points", size = 0.5), alpha = 0.4),
+  diag = list(continuous = wrap("densityDiag", alpha = 0.4)),
+  legend = 1,
+  title = "Matriz de Dispersão Multivariada Fotométrica (Amostra de 3000)"
+) +
+  theme_minimal()
+
+print(p_pair)
+```
+
+![](graficos/pairplot-1_page-0001.jpeg){width="502"}
+
+### Modelagem
+
+Após a etapa de análise exploratória, avançamos para a fase de modelagem. Dado que os algoritmos podem demorar para serem otimizados por conta do volume dos dados, é preciso escolher bem as features. Sendo assim, aplicar o método One-hot e gerar uma matriz de correlação possibilita uma decisão mais coerente. Nesse caso, alpha e delta quase não possuem correlação entre as classes, portanto não possuem um bom poder preditivo e são excluídas da base.
+
+```{r ambiente python}
+#| eval: false
+#| include: false
+library(reticulate)
+use_condaenv(condaenv = "C:/Users/thays/anaconda3", required = TRUE)
+```
+
+```{python setup python}
+#| eval: false
+#| include: false
+from pycaret.classification import *
+from sklearn.metrics import *
+from sklearn.preprocessing import LabelEncoder, LabelBinarizer
+from sklearn.model_selection import train_test_split
+from imblearn.over_sampling import SMOTE
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+dados = pd.read_csv('star_classification_limpo.csv')
+dados.head()
+```
+
+```{python matriz correlacao onehot}
+#| eval: false
+#| include: false
+#%%
+# Matriz Correlação
+plt.figure(figsize=(10, 8))
+# Transformar classe em dummies (One-hot) e calcular correlação
+sns.heatmap(pd.get_dummies(dados, columns=['class']).corr(), 
+            annot=True, cmap='coolwarm', vmin=-1, vmax=1)
+plt.title('Matriz de Correlação')
+plt.show()
+```
+
+```{python retirar alpha e delta}
+#| eval: false
+#| include: false
+#%%
+dados = dados.drop(['alpha', 'delta'], axis=1)
+dados.columns
+```
+
+Os próximos passos foram: transformar a coluna class em númerica (atribuindo valor 0 para GALAXY, 1 para QSO e 2 para STAR; separar a base em treino e teste; e aplicar SMOTE nos dados de treino (pois classes estão desbalanceadas). Após isso, construí e otimizei o modelo Floresta Aleatória. Abaixo encontra-se a tabela de métricas.
+
+Através da tabela percebe-se que o algoritmo apresenta valores elevados e alta capacidade de predição, com menor valor sendo a precisão dos quasares (0.9029) e capacidade máxima no recall das estrelas. Sendo assim, podemos concluir que os QSO obtiveram mais falsos positivos que as demais classes e classificação correta total das STAR. Esse resultado tão elevado nas estrelas deve ser causado pelos valores do redshift.
+
+```{python treino/test e SMOTE}
+#| eval: false
+#| include: false
+#%%
+le = LabelEncoder() # Trocar tipo variável classe, de categórica para numérica
+dados['class'] = le.fit_transform(dados['class'])
+print(dict(enumerate(le.classes_))) # Ver qual número foi atribuído a cada classe
+
+#%%
+# Treino/Teste
+train, test = train_test_split(dados, test_size=0.2, stratify=dados['class'], random_state=10) # stratify: mesma distribuição original
+                            
+# %%
+# Aplicando SMOTE no treino
+X_train, y_train = SMOTE(random_state=10).fit_resample(train.drop(columns=['class']), train['class']) # x = features, y = class: target
+
+dados_train = pd.concat([X_train, y_train], axis=1) # treino
+X_test, y_test = test.drop(columns=['class']), test['class'] # teste
+
+plt.figure(figsize=(8, 5))
+sns.countplot(x='class', data=dados_train, 
+              order = dados_train['class'].value_counts().index)
+plt.title('Frequência por Classe', fontsize=14, pad=15)
+plt.xlabel('Classes', fontsize=12)
+plt.ylabel('Quantidade de Registros', fontsize=12)
+plt.show()
+```
+
+```{python random florest}
+#| eval: false
+#| include: false
+# Base random florest
+crf = ClassificationExperiment(target='class', fold=5, session_id=123, 
+                               verbose=False).fit(dados_train)
+rf_base = crf.create_model('rf', max_depth=3, min_samples_split=2, verbose=False)
+
+# Otimizar modelo
+grid_rf = {'n_estimators':[50, 100, 200, 300],
+           'max_depth':[3, 5, 7], 'min_samples_split':[2]}
+                                            # Valores que serão avaliados
+tuned_rf = crf.tune_model(rf_base.pipeline, custom_grid=grid_rf, 
+                          optimize='F1_weighted', verbose=False) # Otimizar F1
+
+# Consolidar no treino inteiro
+final_rf = crf.finalize_model(tuned_rf.pipeline)
+# Avaliar no teste
+pred_rf = final_rf.pipeline.predict(X_test)
+```
+
+```{python metricas}
+#| eval: false
+#| include: false
+#%%
+from IPython.display import display, Markdown
+
+#Definir função para usar futuramente no svm
+def tabela_metricas(y_true, y_pred, nomes_classes=None, modelo=""):
+    # Tabela métricas
+    print("Tabela de Métricas - ",modelo)
+    relatorio = classification_report(y_true, y_pred, 
+                                      target_names=nomes_classes, output_dict=True)
+    df_metricas = pd.DataFrame(relatorio).T.round(4)
+    # Kappa como uma linha extra na tabela
+    df_metricas.loc['kappa'] = [cohen_kappa_score(y_true, y_pred), None, None, None]
+    # Formato de tabela Markdown
+    display(Markdown(df_metricas.fillna('-').to_markdown()))
+    
+tabela_metricas(y_test, pred_rf, nomes_classes=le.classes_, modelo='Floresta Aleatória')
+
+```
+
+\begingroup
+\footnotesize
+
+|                     | Precisão | Recall | F1-Score | Domínio |
+|---------------------|:--------:|:------:|:--------:|:-------:|
+| **GALAXY**          |  0.9846  |  0.96  |  0.9721  |  11887  |
+| **QSO**             |  0.9029  | 0.9525 |  0.9271  |  3749   |
+| **STAR**            |  0.9788  |   1    |  0.9893  |  4257   |
+| **Acurácia**        |  0.9671  | 0.9671 |  0.9671  | 0.9671  |
+| **Média**           |  0.9555  | 0.9708 |  0.9628  |  19893  |
+| **Média Ponderada** |  0.968   | 0.9671 |  0.9673  |  19893  |
+| **Kappa**           | 0.942083 |   \-   |    \-    |   \-    |
+
+\endgroup
+
+Terminada a Floresta Aleatória, modela-se o SVM. Seguem as métricas do algoritmo.
+
+É notável o excelente desempenho preditivo. Ainda que a recall das estrelas não tenha resultado perfeito 1, o F1-Score dos demais corpos, acurácia, coeficiente kappa e médias são maiores que da floresta. STAR também é a classe mais fácil de separar.
+
+```{python svm}
+#| eval: false
+#| include: false
+# Base Modelo SVM Não Linear
+
+# Amostra estratificada de 15.000 linhas apenas para achar os hiperparâmetros rápido
+amostra_tune = dados_train.groupby('class', group_keys=False).apply(lambda x: x.sample(5000, random_state=42))
+csvm = ClassificationExperiment(target='class', fold=3, normalize=True, session_id=123).fit(amostra_tune)
+svm = csvm.create_model('rbfsvm')
+
+# Otimizar o modelo não linear
+grid_svm = {'C':[1, 10, 50], 'gamma': ['scale', 0.01, 0.1]}
+# Apenas 4 iterações com 3 folds (12 treinos rápidos em vez de 50)
+tuned_svm = csvm.tune_model(svm.pipeline, custom_grid=grid_svm, n_iter=4, optimize='F1_weighted', verbose=False)
+
+# Treina o modelo final na base treino completa usando os melhores parâmetros encontrados
+csvm_full = ClassificationExperiment(target='class', fold=3, normalize=True, session_id=123).fit(dados_train)
+final_svm = csvm_full.create_model('rbfsvm', **tuned_svm.best_params)
+
+# Avaliar no teste
+pred_svm = final_svm.pipeline.predict(X_test)
+
+```
+
+```{python metricas svm}
+#| eval: false
+#| include: false
+#%%
+tabela_metricas(y_test, pred_svm, nomes_classes=le.classes_, modelo='SVM')
+```
+
+\begingroup
+\footnotesize
+
+|                     | Precisão | Recall | F1-Score | Domínio |
+|---------------------|:--------:|:------:|:--------:|:-------:|
+| **GALAXY**          |  0.9827  | 0.9695 |  0.976   |  11887  |
+| **QSO**             |  0.9421  | 0.9456 |  0.9438  |  3749   |
+| **STAR**            |  0.9666  | 0.9998 |  0.9829  |  4257   |
+| **Acurácia**        |  0.9714  | 0.9714 |  0.9714  | 0.9714  |
+| **Média**           |  0.9638  | 0.9716 |  0.9676  |  19893  |
+| **Média Ponderada** |  0.9716  | 0.9714 |  0.9714  |  19893  |
+| **Kappa**           | 0.94944  |   \-   |    \-    |   \-    |
+
+\endgroup
+
+Observando as figuras abaixo, pode-se constatar que a hipótese do redshift ser uma feature de extrema importância para predições estava correta. Isso é analisado de formas diferentes: a floresta usa o redshift logo nos primeiros nós das árvores para separar rapidamente as estrelas (próximas de zero) e os quasares (valores altos) das galáxias, já no SVM, quando os valores de redshift são embaralhados, ele perde quase metade de sua capacidade de acerto, provando que o hiperplano depende fortemente dessa dimensão.
+
+Em relação às outras features, quando uma galáxia e um quasar possuem valores parecidos de redshift, os modelos usam o perfil de cor para desempatar a classificação, por exemplo: na banda z os quasares possuem valor superior às galáxias (visualizado na AED, por isso está no top 3 mais importantes). Mas o SVM distribui melhor o peso entre as variáveis, pois traça fronteiras com combinação simultânea de todas as cores, enquanto a floresta corta uma feature por vez, concentrando muita importância no redshift.
+
+```{python importancia features lado a lado}
+#| eval: false
+#| include: false
+from sklearn.inspection import permutation_importance
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 3.2))
+# Importância Random Florest - Impureza de Gini
+pd.Series(final_rf.pipeline.named_steps['rf'].feature_importances_,
+    index=X_train.columns).sort_values().plot(kind='barh', color='steelblue',
+    title='Importância das Variáveis (Random Forest)', ax=axes[0])
+axes[0].set_xlabel('Importância Relativa')
+axes[0].grid(axis='x', linestyle='--', alpha=0.6)
+
+# Importância por Permutação (SVM)
+# Calcula a importância embaralhando os dados de teste (n_repeats=5 para ser rápido)
+perm = permutation_importance(final_svm.pipeline, X_test, y_test,n_repeats=5,
+random_state=42, scoring='f1_weighted')
+
+pd.Series(perm.importances_mean,
+index=X_test.columns).sort_values().plot(kind='barh', color='darkorange',
+title='Importância por Permutação (SVM)', ax=axes[1])
+axes[1].set_xlabel('Queda Média no F1-Score')
+axes[1].grid(axis='x', linestyle='--', alpha=0.6)
+
+plt.tight_layout()
+plt.show()
+```
+
+![](graficos/importancia%20features%20lado%20a%20lado-5_page-0001.jpg){width="556"}
+
+Em problemas com classes desbalanceadas, as curvas Precision-Recall são a melhor escolha pois é mais rigorosa e foca no desempenho do modelo sobre a classe positiva (especialmente as minoritárias). As classes STAR e GALAXY apresentaram comportamento próximo ao ideal, mantendo precisão superior a 0,95. Para os QSO, observa-se uma leve queda de precisão em valores extremos de recall, evidenciando a sobreposição fotométrica entre quasares e galáxias. O modelo SVM sustentou uma curva ligeiramente superior à da floresta, confirmando sua maior eficácia na contenção de falsos positivos.
+
+```{python precision-recall lado a lado}
+#| eval: false
+#| include: false
+y_test_bin = LabelBinarizer().fit_transform(y_test)
+y_prob_rf = final_rf.pipeline.predict_proba(X_test)
+y_prob_svm = final_svm.pipeline.predict_proba(X_test)
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 3.5))
+# Gráfico Random Forest
+for i, classe in enumerate(le.classes_):
+    PrecisionRecallDisplay.from_predictions(y_test_bin[:, i], y_prob_rf[:, i], 
+        name=classe, ax=axes[0])
+axes[0].set_title('Curvas Precision-Recall por Classe (Random Forest)')
+axes[0].grid(linestyle='--', alpha=0.5)
+
+# Gráfico SVM
+for i, classe in enumerate(le.classes_):
+    PrecisionRecallDisplay.from_predictions(y_test_bin[:, i], y_prob_svm[:, i], 
+        name=classe, ax=axes[1])
+axes[1].set_title('Curvas Precision-Recall por Classe (SVM)')
+axes[1].grid(linestyle='--', alpha=0.5)
+
+plt.tight_layout()
+plt.show()
+```
+
+![](graficos/precision-recall%20lado%20a%20lado-7_page-0001.jpg){width="516"}
+
+Por último, a comparação entre as matrizes de confusão normalizadas. Observa-se que em ambos modelos, as estrelas "reais" são classificadas perfeitamente, sem confusão com outros corpos. A principal fonte de erro concentrou-se na fronteira entre galáxia e quasar, refletindo as áreas de sobreposição. Nesse aspecto, o SVM demonstrou maior equilíbrio ao reduzir pela metade a taxa de galáxias classificadas como quasares (1,8% contra 3,2% no Random Forest), o que explica sua superioridade na precisão e F1-Score.
+
+```{python matrizes confusao}
+#| eval: false
+#| include: false
+# %%
+# Matrizes de Confusão Lado a Lado
+fig, axes = plt.subplots(1, 2, figsize=(12, 3.2))
+
+# Random Forest 
+ConfusionMatrixDisplay.from_predictions(y_test, pred_rf, display_labels=le.classes_,
+                       normalize='true', values_format='.1%', #  em %
+                       cmap='Blues', ax=axes[0], colorbar=False)
+axes[0].set_title('Random Forest (% por Classe Real)')
+# SVM
+ConfusionMatrixDisplay.from_predictions(y_test, pred_svm, display_labels=le.classes_,
+normalize='true', values_format='.1%', cmap='Oranges', ax=axes[1], colorbar=False)
+axes[1].set_title('SVM (% por Classe Real)')
+
+plt.tight_layout()
+plt.show()
+```
+
+![](graficos/matrizes%20confusao-9_page-0001.jpg){width="450"}
+
+## Conclusão
+
+A análise de importância das variáveis confirmou que o redshift (desvio para o vermelho) é a característica com maior poder preditivo em ambos os modelos. Isso condiz com a realidade física astronômica: o desvio para o vermelho mede o alongamento do comprimento de onda da luz causado pela expansão métrica do Universo, servindo como um indicador direto de distância cosmológica e taxa de afastamento em grandes escalas *(SARAIVA; OLIVEIRA FILHO; MÜLLER)*.
+
+- **Estrelas (STAR):** Por estarem localizadas dentro da nossa própria galáxia (Via Láctea), suas velocidades radiais relativas à Terra são muito baixas comparadas à velocidade da luz, resultando em valores de redshift praticamente nulos *(SDSS, 2021a)*.
+- **Galáxias (GALAXY) e Quasares (QSO):** São objetos extragalácticos muito distantes. Como os quasares estão situados em distâncias muito maiores, seus espectros sofrem um intenso desvio para o vermelho, exibindo valores significativamente mais elevados que os das galáxias observadas *(SARAIVA; OLIVEIRA FILHO; MÜLLER)*.
+
+Contudo, galáxias mais distantes e quasares mais próximos podem apresentar valores parecidos de redshift, causando confusão na predição. Nesses casos, as bandas fotométricas (u, g, r, i, z) atuam como complementares essenciais para desempatar objetos com desvios semelhantes *(CLARKE et al., 2020; CHATTERJEE, 2025)*.
+
+Embora a Floresta Aleatória tenha alta capacidade de generalização, o SVM obteve resultados superiores nas métricas globais e na contenção de falsos positivos. A principal dificuldade prevista (a sobreposição fotométrica e de redshift entre galáxias distantes e quasares) foi melhor solucionada pelo SVM, pois o traçado de hiperplanos não lineares considerando todas as bandas de luz simultaneamente reduziu pela metade a confusão entre essas duas classes em comparação aos cortes hierárquicos da Floresta Aleatória *(SDSS, 2021b)*.
+
+Conclui-se, portanto, que a integração do aprendizado de máquina é altamente eficaz para automatizar a classificação estelar a partir dos dados fotométricos e espectroscópicos na base SDSS.
+
+## Referências
+
+- <https://www.kaggle.com/datasets/fedesoriano/stellar-classification-dataset-sdss17>
+
+- <https://www.sdss4.org/dr17>
+
+- <https://www.sdss4.org/science>
+
+- <https://sab-astro.org.br/wp-content/uploads/2026/03/RBA-29online.pdf>
+
+- <https://ieeexplore.ieee.org/document/9994215>
+
+- <https://ieeexplore.ieee.org/abstract/document/6643007>
+
+- <https://www.sdss4.org/dr17/algorithms/redshifts/>
+
+- <https://www.if.ufrgs.br/tex/fis02001/aulas/Aula25-122.pdf>
